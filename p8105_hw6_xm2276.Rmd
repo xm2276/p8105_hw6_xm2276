@@ -1,0 +1,15 @@
+---
+title: "p8105_hw6_xm2276"
+author: "XIAO MA"
+date: "12/4/2021"
+output: github_document
+---
+
+```{r}
+
+```
+
+```{r}
+
+```
+
