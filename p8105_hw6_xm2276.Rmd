@@ -5,11 +5,207 @@ date: "12/4/2021"
 output: github_document
 ---
 
+```{r setup, message=FALSE}
+library(tidyverse)
+library(modelr)
+knitr::opts_chunk$set(
+  fig.width = 6,
+  fig.asp = .6,
+  out.width = "90%"
+)
+theme_set(theme_minimal() +  theme(legend.position = "bottom"))
+
+options(
+  ggplots2.continuous.color = "viridis",
+  ggplots2.continuous.fill = "viridus"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+```
+
+# Problem 1
+## load the data
 ```{r}
+childsbw_url = "https://www.p8105.com/data/birthweight.csv"
+childsbw_df = read_csv(childsbw_url)
+```
+
+## data cleaning
+```{r}
+childsbw_tidy = childsbw_df %>%
+    janitor::clean_names() %>% 
+  mutate(
+    babysex = as.factor(babysex),
+    frace = as.factor(frace),
+    mrace = as.factor(mrace),
+    malform = as.factor(malform)) %>%
+  relocate(bwt)
+  
+purrr::map(childsbw_tidy, ~sum(is.na(.)))
+summary(childsbw_tidy)
+  
+```
+
+## Build model
+```{r}
+selected_mod = step(lm(bwt ~ ., data = childsbw_tidy),direction = "backward") 
+broom::tidy(selected_mod)
+# By using the backward stepwise regression, it helps me to elinminate some insignificant variables. Since we have 20 variables, using stepwise regression would be more efficient for analysis.
+#The lm without variable fincome is because it has a p-value = 0.0688 < 0.05, hence it is insignificant.
+model1 = lm(bwt ~ babysex + bhead + blength + delwt + gaweeks + mheight + mrace + parity + ppwt + smoken, data = childsbw_tidy)
+broom::tidy(model1)
+anova(model1)
+
+#plot
+childsbw_tidy %>% 
+  add_residuals(model1) %>% 
+  add_predictions(model1) %>% 
+  ggplot(aes(x = pred, y = resid)) + 
+  geom_point(alpha = 0.5) +
+  xlab("Fitted Values") +
+  ylab("Residuals") +
+  ggtitle("Residuals Against Fitted Values plot") +
+  geom_abline(intercept = 0, slope = 0, color = "red")
+
+```
+From the plot, we observed that it have some outliers with residuals greater than 2000. It clustered around the lower single digits of the y = 0 and looks like a nonconstant variance plot.
+
+
+## other models
+### model 2
+```{r}
+model2 = lm(bwt ~ blength + gaweeks, data = childsbw_tidy)
+
+broom::tidy(model2)
+```
+
+### model 3
+```{r}
+model3 = lm(bwt ~ bhead * blength * babysex, data = childsbw_tidy)
+broom::tidy(model3)
+```
+
+## Comparison
+```{r}
+cv = crossv_mc(childsbw_tidy, 100) %>% 
+    mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  ) %>% 
+  mutate(
+    model1 = map(train, ~lm(bwt ~ babysex + bhead + blength + delwt + gaweeks + mheight + mrace + parity + ppwt + smoken, data = .x)),
+    model2 = map(train, ~lm(bwt ~ blength + gaweeks, data = .x)),
+    model3 = map(train, ~lm(bwt ~ bhead * blength * babysex, data = .x))) %>% 
+  mutate(
+    rmse_model1 = map2_dbl(model1, test, ~rmse(model = .x, data = .y)),
+    rmse_model2 = map2_dbl(model2, test, ~rmse(model = .x, data = .y)),
+    rmse_model3 = map2_dbl(model3, test, ~rmse(model = .x, data = .y))
+    )
+```
+
+## plot for RMSE
+```{r}
+cv %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    values_to = "rmse",
+    names_prefix = "rmse_" 
+  ) %>% 
+  ggplot(aes(x = model, y = rmse)) +
+  geom_violin() +
+  geom_boxplot(alpha = 0.5, color = "pink")
+
+```
+From the plot, we observed that model1 have the lowest average value of RMSE, hence it is the optimal model among these three models. Model 2 have the highest average value of RMSE
+
+
+
+# Problem 2 
+```{r}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
 
 ```
 
+## Bootstrap
 ```{r}
+boot_sample = function(df) {
+  sample_frac(df, size = 1, replace = TRUE)
+}
 
+bootstrap_df = 
+  tibble(
+    strap_number = c(1:5000),
+    strap_sample = rerun(5000, boot_sample(weather_df))
+  )
+
+weather_strap_results = bootstrap_df %>% 
+  mutate(
+    models = map(strap_sample, ~lm(tmax ~ tmin, data = .x)),
+    results = map(models, broom::glance)
+  )
 ```
 
+### r^2
+```{r}
+rsquare_df = weather_strap_results %>% 
+  select(strap_number, results) %>% 
+  unnest(results) %>% 
+  select(strap_number, adj.r.squared) 
+# CI for R^2
+rsquare_df %>% 
+  summarise(
+    avg_r_square = mean(adj.r.squared),
+    ci_lower = quantile(adj.r.squared, 0.025),
+    ci_upper = quantile(adj.r.squared, 0.975)
+  )
+ rsquare_df %>%
+  ggplot(aes(adj.r.squared)) +
+  geom_density() +
+   labs(title = "Distribution of R Squared",
+        x = "R Squared") +
+   theme(plot.title = element_text(hjust = 0.5))
+ 
+quantile(rsquare_df %>% pull(adj.r.squared), prob = c(0.025, 0.975))
+
+
+```
+By observing the density plot, the distribution for adjusted r squared is approximate normal. The average value of adjusted r squared is 0.911. The 95% CI is [0.894, 0.927].
+
+
+
+### log(beta0_hat * beta1_hat)
+```{r}
+log = 
+  bootstrap_df %>% 
+  mutate(
+    models = map(.x = strap_sample, ~lm(tmax ~ tmin, data = .x)),
+    results = map(models, broom::tidy)
+  ) %>% 
+  select(strap_number, results) %>% 
+  unnest(results) %>% 
+  select(strap_number, term, estimate) %>% 
+  pivot_wider(names_from = term, 
+              values_from = estimate) %>% 
+  janitor::clean_names() %>% 
+  mutate(log = log(intercept * tmin))
+log %>% 
+  ggplot(aes(x = log)) +
+  geom_density() +
+  labs(x = "log(beta0_hat * beta1_hat)")
+
+quantile(log %>% pull(log), prob = c(0.025, 0.975))
+```
+By observing the density plot, the distribution for log(beta0)hat*beta1_hat) is approximate normal.
